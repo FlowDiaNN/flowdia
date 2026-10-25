@@ -14,7 +14,8 @@ export function unfold(g, J) {
   const nodes = [];
   for (const n of g.nodes) {
     for (let i = 0; i < J; i++) {
-      nodes.push({ ...n, id: `${n.id}_${i}`, label: `${n.label}_${i}` });
+      // Positions are dropped: the unfolded graph is laid out afresh.
+      nodes.push({ ...n, id: `${n.id}_${i}`, label: `${n.label}_${i}`, x: undefined, y: undefined });
     }
   }
   const edges = [];

@@ -1,7 +1,7 @@
 export const THEME = {
   paper: '#FFFFFF',
   ink: '#1C1F23',
-  line: '#5A6270',
+  line: '#2B2F35',
   rule: '#E3E6EA',
   accent: '#1F5FD1',
   alert: '#D6451F',

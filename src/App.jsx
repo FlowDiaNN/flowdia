@@ -3,7 +3,7 @@ import GraphView from './GraphView.jsx';
 import CommandBar from './CommandBar.jsx';
 import StatusBar from './StatusBar.jsx';
 import { analyzeLoops } from './analysis.js';
-import { parseGraph, serializeGraph } from './model.js';
+import { parseGraph, serializeGraph, semantic, isStructural } from './model.js';
 import { retime, unfold, bellmanFord } from './transforms.js';
 import { layoutGraph } from './layout.js';
 import { SAMPLES } from './samples.js';
@@ -14,20 +14,35 @@ const warn = (text) => ({ text, kind: 'warn' });
 const HINT = { text: 'Click a node, drag to pan, scroll to zoom. Press / to search or run a command.', kind: 'hint' };
 
 export default function App() {
-  const [history, setHistory] = useState(() => [{ label: 'iir', graph: parseGraph(SAMPLES.iir.text) }]);
+  const [history, setHistory] = useState(() => [{ label: 'loops', graph: parseGraph(SAMPLES.loops.text) }]);
   const [idx, setIdx] = useState(0);
   const graph = history[idx].graph;
 
   // Loop bounds and the loop (or critical loops) highlighted by hovering the status bar.
-  const analysis = useMemo(() => (graph.weights === 'delay' ? analyzeLoops(graph) : null), [graph]);
+  // The plain graph behind the drawing: forks, dots and delay boxes folded into edge weights.
+  const sem = useMemo(() => semantic(graph), [graph]);
+  const analysis = useMemo(() => (graph.weights === 'delay' ? analyzeLoops(sem) : null), [graph, sem]);
   const [hover, setHover] = useState(null);
   useEffect(() => setHover(null), [analysis]);
   const hl = useMemo(() => {
     if (!analysis || !hover) return null;
     const ls = hover.kind === 'bound' ? analysis.critical : [analysis.loops[hover.i]].filter(Boolean);
     if (!ls.length) return null;
-    return { nodes: new Set(ls.flatMap((l) => l.nodes)), edges: new Set(ls.flatMap((l) => l.edges)) };
-  }, [analysis, hover]);
+    // A loop passes through drawn edges and structural nodes too, so light those up as well.
+    const byId = new Map(sem.edges.map((e) => [e.id, e]));
+    const nodes = new Set();
+    const edges = new Set();
+    for (const l of ls) {
+      l.nodes.forEach((x) => nodes.add(x));
+      for (const id of l.edges) {
+        const d = byId.get(id)?.drawn;
+        if (!d) continue;
+        d.nodes.forEach((x) => nodes.add(x));
+        d.edges.forEach((x) => edges.add(x));
+      }
+    }
+    return { nodes, edges };
+  }, [analysis, hover, sem]);
 
   const [view, setView] = useState(null); // { graph, layout }
   const [input, setInput] = useState('');
@@ -80,10 +95,10 @@ export default function App() {
         for (const a of args) {
           const m = a.match(/^([\w.]+)=(-?\d+)$/);
           if (!m) throw new Error(`Can't read "${a}". Write it as node=value, for example 3=-1.`);
-          if (!graph.nodes.some((n) => n.id === m[1])) throw new Error(`There is no node "${m[1]}".`);
+          if (!sem.nodes.some((n) => n.id === m[1])) throw new Error(`There is no node "${m[1]}".`);
           r[m[1]] = parseInt(m[2], 10);
         }
-        const next = retime(graph, r);
+        const next = retime(sem, r);
         push(`retime ${args.join(' ')}`, next);
         const bad = next.edges.filter((e) => e.w < 0).length;
         if (graph.weights === 'delay' && bad) return warn(`Retimed, but ${bad} edge${bad > 1 ? 's' : ''} now carry negative delay (shown in red).`);
@@ -92,13 +107,13 @@ export default function App() {
       case 'unfold': {
         const J = parseInt(args[0], 10);
         if (!Number.isInteger(J) || J < 1 || J > 16) throw new Error('Give an unfolding factor from 1 to 16, for example: unfold 4');
-        push(`unfold ${J}`, unfold(graph, J));
-        return ok(`Unfolded by J = ${J}: ${graph.nodes.length * J} nodes, ${graph.edges.length * J} edges.`);
+        push(`unfold ${J}`, unfold(sem, J));
+        return ok(`Unfolded by J = ${J}: ${sem.nodes.length * J} nodes, ${sem.edges.length * J} edges.`);
       }
       case 'solve': {
-        const source = args[0] ?? (graph.nodes.find((n) => n.type === 'host') ?? graph.nodes[0]).id;
-        if (!graph.nodes.some((n) => n.id === source)) throw new Error(`There is no node "${source}".`);
-        const res = bellmanFord(graph, source);
+        const source = args[0] ?? (sem.nodes.find((n) => n.type === 'host') ?? sem.nodes[0]).id;
+        if (!sem.nodes.some((n) => n.id === source)) throw new Error(`There is no node "${source}".`);
+        const res = bellmanFord(sem, source);
         if (!res.feasible) {
           setSolution(null);
           setMarks(new Set(res.cycle));
@@ -138,7 +153,7 @@ export default function App() {
       return;
     }
     const q = value.trim().toLowerCase();
-    const hits = new Set(graph.nodes.filter((n) => n.id.toLowerCase().includes(q) || n.label.toLowerCase().includes(q)).map((n) => n.id));
+    const hits = new Set(graph.nodes.filter((n) => !isStructural(n) && (n.id.toLowerCase().includes(q) || n.label.toLowerCase().includes(q))).map((n) => n.id));
     setMarks(hits);
     setMessage(hits.size ? ok(`${hits.size} node${hits.size > 1 ? 's' : ''} match.`) : warn('No node matches.'));
   };
