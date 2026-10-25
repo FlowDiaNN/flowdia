@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import GraphView from './GraphView.jsx';
 import CommandBar from './CommandBar.jsx';
+import StatusBar from './StatusBar.jsx';
+import { analyzeLoops } from './analysis.js';
 import { parseGraph, serializeGraph } from './model.js';
 import { retime, unfold, bellmanFord } from './transforms.js';
 import { layoutGraph } from './layout.js';
@@ -12,9 +14,20 @@ const warn = (text) => ({ text, kind: 'warn' });
 const HINT = { text: 'Click a node, drag to pan, scroll to zoom. Press / to search or run a command.', kind: 'hint' };
 
 export default function App() {
-  const [history, setHistory] = useState(() => [{ label: 'iir', graph: parseGraph(SAMPLES.iir) }]);
+  const [history, setHistory] = useState(() => [{ label: 'iir', graph: parseGraph(SAMPLES.iir.text) }]);
   const [idx, setIdx] = useState(0);
   const graph = history[idx].graph;
+
+  // Loop bounds and the loop (or critical loops) highlighted by hovering the status bar.
+  const analysis = useMemo(() => (graph.weights === 'delay' ? analyzeLoops(graph) : null), [graph]);
+  const [hover, setHover] = useState(null);
+  useEffect(() => setHover(null), [analysis]);
+  const hl = useMemo(() => {
+    if (!analysis || !hover) return null;
+    const ls = hover.kind === 'bound' ? analysis.critical : [analysis.loops[hover.i]].filter(Boolean);
+    if (!ls.length) return null;
+    return { nodes: new Set(ls.flatMap((l) => l.nodes)), edges: new Set(ls.flatMap((l) => l.edges)) };
+  }, [analysis, hover]);
 
   const [view, setView] = useState(null); // { graph, layout }
   const [input, setInput] = useState('');
@@ -98,13 +111,14 @@ export default function App() {
       }
       case 'load': {
         const name = args[0];
-        if (!SAMPLES[name]) throw new Error(`Unknown example. Try: ${Object.keys(SAMPLES).join(', ')}.`);
-        setHistory([{ label: name, graph: parseGraph(SAMPLES[name]) }]);
+        const sample = SAMPLES[name];
+        if (!sample) throw new Error(`Unknown example. Try: ${Object.keys(SAMPLES).join(', ')}.`);
+        setHistory([{ label: name, graph: parseGraph(sample.text) }]);
         setIdx(0);
         setSolution(null);
         setMarks(null);
         setSelected(null);
-        return ok(`Opened the ${name} example.`);
+        return ok(`Opened "${sample.title}"${sample.source ? ` (${sample.source})` : ''}.`);
       }
       case 'edit': setEditorOpen((o) => !o); return HINT;
       case 'fit': viewRef.current?.fit(); return HINT;
@@ -148,6 +162,7 @@ export default function App() {
   };
 
   const onSelect = (id) => {
+    setHover(null);
     setSelected(id);
     if (!id) return setMessage(HINT);
     const n = graph.nodes.find((x) => x.id === id);
@@ -178,6 +193,7 @@ export default function App() {
         setInput('');
         setMarks(null);
         setSelected(null);
+        setHover(null);
         setMessage(HINT);
         document.activeElement?.blur();
       } else if (!typing && e.key === '/') {
@@ -218,7 +234,7 @@ export default function App() {
 
       {view && (
         <GraphView ref={viewRef} graph={view.graph} layout={view.layout}
-          selected={selected} marks={marks} solution={solution} onSelect={onSelect} />
+          selected={selected} marks={marks} solution={solution} hl={hl} onSelect={onSelect} />
       )}
 
       <header className={`top${editorOpen ? ' shifted' : ''}`}>
@@ -235,6 +251,8 @@ export default function App() {
           ))}
         </nav>
       )}
+
+      <StatusBar analysis={analysis} hover={hover} onHover={setHover} shifted={editorOpen} />
     </div>
   );
 }

@@ -3,6 +3,7 @@ import { select } from 'd3-selection';
 import { zoom, zoomIdentity } from 'd3-zoom';
 import 'd3-transition';
 import { R, roundedPath, midpoint } from './layout.js';
+import { defaultTime } from './model.js';
 import { THEME as T } from './theme.js';
 
 const reduceMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
@@ -26,7 +27,8 @@ function Markers() {
   return <defs>{[mk('arrow-line', T.line), mk('arrow-accent', T.accent), mk('arrow-alert', T.alert)]}</defs>;
 }
 
-const GraphView = forwardRef(function GraphView({ graph, layout, selected, marks, solution, onSelect }, ref) {
+// hl = { nodes: Set, edges: Set } of loop parts to highlight; everything else fades.
+const GraphView = forwardRef(function GraphView({ graph, layout, selected, marks, solution, hl, onSelect }, ref) {
   const svgRef = useRef(null);
   const gRef = useRef(null);
   const zoomRef = useRef(null);
@@ -45,9 +47,10 @@ const GraphView = forwardRef(function GraphView({ graph, layout, selected, marks
     if (!layout || !svgRef.current) return;
     const { width, height } = svgRef.current.getBoundingClientRect();
     const top = 96; // room for the command bar
-    const k = Math.min(width / layout.width, (height - top) / layout.height, 1.4);
+    const bottom = 44; // room for the status bar
+    const k = Math.min(width / layout.width, (height - top - bottom) / layout.height, 1.4);
     const tx = (width - layout.width * k) / 2;
-    const ty = top + (height - top - layout.height * k) / 2;
+    const ty = top + (height - top - bottom - layout.height * k) / 2;
     const t = zoomIdentity.translate(tx, ty).scale(k);
     const sel = select(svgRef.current);
     (reduceMotion() ? sel : sel.transition().duration(300)).call(zoomRef.current.transform, t);
@@ -75,6 +78,7 @@ const GraphView = forwardRef(function GraphView({ graph, layout, selected, marks
 
   const delayMode = graph.weights === 'delay';
   const active = marks && marks.size > 0;
+  const showTimes = delayMode && graph.nodes.some((n) => n.time !== defaultTime(n.type));
 
   return (
     <svg ref={svgRef} className="canvas" onClick={() => onSelect(null)} role="img" aria-label="Graph canvas">
@@ -83,21 +87,23 @@ const GraphView = forwardRef(function GraphView({ graph, layout, selected, marks
         {graph.edges.map((e) => {
           const pts = layout.edges[e.id];
           if (!pts) return null;
-          const incident = selected && (e.from === selected || e.to === selected);
+          const hot = !!hl && hl.edges.has(e.id);
+          const incident = !hl && selected && (e.from === selected || e.to === selected);
           const invalid = delayMode && e.w < 0;
-          const dim = (active && !marks.has(e.from) && !marks.has(e.to)) || (selected && !incident);
-          const color = invalid ? T.alert : incident ? T.accent : T.line;
-          const marker = invalid ? 'arrow-alert' : incident ? 'arrow-accent' : 'arrow-line';
+          const dim = hl ? !hot : (active && !marks.has(e.from) && !marks.has(e.to)) || (selected && !incident);
+          const tone = hot || incident ? T.accent : invalid ? T.alert : T.line;
+          const marker = hot || incident ? 'arrow-accent' : invalid ? 'arrow-alert' : 'arrow-line';
           const mid = midpoint(pts);
           const text = delayMode ? (e.w === 1 ? 'D' : `${e.w}D`) : String(e.w);
           const boxW = 24 + (text.length - 1) * 8;
+          const boxTone = hot ? T.accent : invalid ? T.alert : T.ink;
           return (
-            <g key={e.id} opacity={dim ? 0.22 : 1}>
-              <path d={roundedPath(pts)} fill="none" stroke={color} strokeWidth={incident ? 1.8 : 1.3} markerEnd={`url(#${marker})`} />
+            <g key={e.id} opacity={dim ? 0.18 : 1}>
+              <path d={roundedPath(pts)} fill="none" stroke={tone} strokeWidth={hot ? 2.6 : incident ? 1.8 : 1.3} markerEnd={`url(#${marker})`} />
               {delayMode && e.w !== 0 && (
                 <>
-                  <rect x={mid.x - boxW / 2} y={mid.y - 12} width={boxW} height={24} fill={T.paper} stroke={invalid ? T.alert : T.ink} strokeWidth="1.3" />
-                  <Label text={text} x={mid.x} y={mid.y} size={14} fill={invalid ? T.alert : T.ink} />
+                  <rect x={mid.x - boxW / 2} y={mid.y - 12} width={boxW} height={24} fill={T.paper} stroke={boxTone} strokeWidth={hot ? 2 : 1.3} />
+                  <Label text={text} x={mid.x} y={mid.y} size={14} fill={boxTone} />
                 </>
               )}
               {!delayMode && (
@@ -113,23 +119,28 @@ const GraphView = forwardRef(function GraphView({ graph, layout, selected, marks
         {graph.nodes.map((n) => {
           const p = layout.nodes[n.id];
           if (!p) return null;
+          const hot = !!hl && hl.nodes.has(n.id);
           const isSel = selected === n.id;
           const hit = !active || marks.has(n.id);
-          const dim = (active && !hit) || (selected && !isSel && !graph.edges.some((e) => (e.from === selected && e.to === n.id) || (e.to === selected && e.from === n.id)));
-          const stroke = isSel || (active && hit) ? T.accent : T.ink;
+          const dim = hl
+            ? !hot
+            : (active && !hit) || (selected && !isSel && !graph.edges.some((e) => (e.from === selected && e.to === n.id) || (e.to === selected && e.from === n.id)));
+          const stroke = hot || isSel || (active && hit) ? T.accent : T.ink;
           const symbol = n.type === 'add' ? '+' : n.type === 'mul' ? '×' : null;
           const host = n.type === 'host';
+          const timed = showTimes && n.type !== 'io' && n.type !== 'host';
           return (
             <g key={n.id} opacity={dim ? 0.3 : 1} style={{ cursor: 'pointer' }}
               onClick={(ev) => { ev.stopPropagation(); onSelect(n.id); }}>
               <circle cx={p.x} cy={p.y} r={R} fill={host ? T.ink : T.paper} stroke={stroke}
-                strokeWidth={isSel ? 2.4 : 1.5} strokeDasharray={n.type === 'io' ? '3 3' : undefined} />
+                strokeWidth={hot || isSel ? 2.4 : 1.5} strokeDasharray={n.type === 'io' ? '3 3' : undefined} />
               {symbol
                 ? (<>
                     <Label text={symbol} x={p.x} y={p.y} size={22} />
                     <Label text={n.label} x={p.x + R * 0.8} y={p.y + R * 0.95} size={13} italic anchor="start" fill={T.line} />
                   </>)
                 : <Label text={n.label} x={p.x} y={p.y} size={n.label.length > 3 ? 12 : 17} fill={host ? T.paper : T.ink} />}
+              {timed && <Label text={`(${n.time})`} x={p.x + R * 0.85} y={p.y - R * 1.05} size={12} anchor="start" fill={T.line} />}
               {solution && Number.isFinite(solution[n.id]) && (
                 <text x={p.x} y={p.y - R - 8} textAnchor="middle" fontFamily={T.sans} fontSize="12" fill={T.accent}>
                   r = {solution[n.id]}
